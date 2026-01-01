@@ -26,6 +26,9 @@ const Cube3D: React.FC<Cube3DProps> = ({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cubesRef = useRef<THREE.Mesh[]>([]);
+  
+  // Animation lock to prevent double execution
+  const activeAnimationRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -45,10 +48,10 @@ const Cube3D: React.FC<Cube3DProps> = ({
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
+    controls.dampingFactor = 0.1;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-    const dLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+    const dLight = new THREE.DirectionalLight(0xffffff, 0.5);
     dLight.position.set(10, 15, 10);
     scene.add(dLight);
 
@@ -57,8 +60,8 @@ const Cube3D: React.FC<Cube3DProps> = ({
       for (let y = -1; y <= 1; y++) {
         for (let z = -1; z <= 1; z++) {
           const mats = Array(6).fill(0).map(() => new THREE.MeshStandardMaterial({ 
-            color: 0x111111,
-            roughness: 0.2,
+            color: 0x1a1a1a,
+            roughness: 0.1,
             metalness: 0.1 
           }));
           const cube = new THREE.Mesh(cubeGeo, mats);
@@ -79,35 +82,40 @@ const Cube3D: React.FC<Cube3DProps> = ({
     return () => { mountRef.current?.removeChild(renderer.domElement); };
   }, []);
 
-  // Sync Sticker Colors using fixed indexing to match logically unfolded cube
+  // Update sticker colors based on state
   useEffect(() => {
-    if (!sceneRef.current) return;
+    // Only update colors when not in the middle of a rotation
+    if (!sceneRef.current || activeAnimationRef.current) return;
+    
     cubesRef.current.forEach((cube) => {
       const p = cube.position;
       const mats = cube.material as THREE.MeshStandardMaterial[];
-      mats.forEach(m => m.color.set(0x111111));
+      mats.forEach(m => m.color.set(0x1a1a1a));
       
-      const rx = Math.round(p.x);
-      const ry = Math.round(p.y);
-      const rz = Math.round(p.z);
+      const x = Math.round(p.x);
+      const y = Math.round(p.y);
+      const z = Math.round(p.z);
       
-      // Standard Cube Mapping to Array Index 0-8
-      // Indexing rule: row-major from top-left of the face
-      if (ry === 1) mats[2].color.set(COLORS[cubeState[Face.U][(1 - rz) * 3 + (rx + 1)]]);
-      if (ry === -1) mats[3].color.set(COLORS[cubeState[Face.D][(rz + 1) * 3 + (rx + 1)]]);
-      if (rx === -1) mats[1].color.set(COLORS[cubeState[Face.L][(1 - ry) * 3 + (1 - rz)]]);
-      if (rx === 1) mats[0].color.set(COLORS[cubeState[Face.R][(1 - ry) * 3 + (rz + 1)]]);
-      if (rz === 1) mats[4].color.set(COLORS[cubeState[Face.F][(1 - ry) * 3 + (rx + 1)]]);
-      if (rz === -1) mats[5].color.set(COLORS[cubeState[Face.B][(1 - ry) * 3 + (1 - rx)]]);
+      // Face materials Order: 0:Right, 1:Left, 2:Up, 3:Down, 4:Front, 5:Back
+      if (y === 1) mats[2].color.set(COLORS[cubeState[Face.U][(z + 1) * 3 + (x + 1)]]);
+      if (y === -1) mats[3].color.set(COLORS[cubeState[Face.D][(1 - z) * 3 + (x + 1)]]);
+      if (x === -1) mats[1].color.set(COLORS[cubeState[Face.L][(1 - y) * 3 + (z + 1)]]);
+      if (x === 1) mats[0].color.set(COLORS[cubeState[Face.R][(1 - y) * 3 + (1 - z)]]);
+      if (z === 1) mats[4].color.set(COLORS[cubeState[Face.F][(1 - y) * 3 + (x + 1)]]);
+      if (z === -1) mats[5].color.set(COLORS[cubeState[Face.B][(1 - y) * 3 + (1 - x)]]);
     });
   }, [cubeState]);
 
+  // Handle animation
   useEffect(() => {
-    if (isAnimating && pendingMove && sceneRef.current) {
-      const group = new THREE.Group();
-      sceneRef.current.add(group);
+    if (isAnimating && pendingMove && sceneRef.current && !activeAnimationRef.current) {
+      activeAnimationRef.current = pendingMove;
+      
       const face = pendingMove[0] as Face;
       const suffix = pendingMove.substring(1);
+      
+      const group = new THREE.Group();
+      sceneRef.current.add(group);
       
       const affected: THREE.Mesh[] = [];
       cubesRef.current.forEach(c => {
@@ -119,40 +127,57 @@ const Cube3D: React.FC<Cube3DProps> = ({
         if (face === 'R' && p.x > 0.5) match = true;
         if (face === 'F' && p.z > 0.5) match = true;
         if (face === 'B' && p.z < -0.5) match = true;
-        if (match) { group.add(c); affected.push(c); }
+        
+        if (match) {
+          group.add(c);
+          affected.push(c);
+        }
       });
 
-      let angle = (face === 'U' || face === 'R' || face === 'F') ? -Math.PI / 2 : Math.PI / 2;
-      if (suffix === "'") angle *= -1;
-      if (suffix === "2") angle *= 2;
+      // Standard coordinate rotation angles
+      let targetAngle = (face === 'U' || face === 'R' || face === 'F') ? -Math.PI / 2 : Math.PI / 2;
+      if (suffix === "'") targetAngle *= -1;
+      if (suffix === "2") targetAngle *= 2;
 
-      const start = performance.now();
-      const step = (t: number) => {
-        const elapsed = t - start;
+      const startTime = performance.now();
+      
+      const animateFrame = (currentTime: number) => {
+        const elapsed = currentTime - startTime;
         const progress = Math.min(elapsed / animationSpeed, 1);
+        
+        // Simple cubic ease out
         const ease = 1 - Math.pow(1 - progress, 3);
-        group.rotation.set(0,0,0);
-        if (face === 'U' || face === 'D') group.rotation.y = angle * ease;
-        else if (face === 'L' || face === 'R') group.rotation.x = angle * ease;
-        else group.rotation.z = angle * ease;
+        const currentAngle = targetAngle * ease;
+        
+        group.rotation.set(0, 0, 0);
+        if (face === 'U' || face === 'D') group.rotation.y = currentAngle;
+        else if (face === 'L' || face === 'R') group.rotation.x = currentAngle;
+        else group.rotation.z = currentAngle;
 
-        if (progress < 1) requestAnimationFrame(step);
-        else {
+        if (progress < 1) {
+          requestAnimationFrame(animateFrame);
+        } else {
+          // Finalize the rotation and clean up
           group.updateMatrixWorld();
           affected.forEach(c => {
             c.applyMatrix4(group.matrixWorld);
             sceneRef.current?.add(c);
+            // Snap to exact integers to avoid floating point drift
             c.position.set(Math.round(c.position.x), Math.round(c.position.y), Math.round(c.position.z));
-            c.rotation.set(0,0,0);
+            // Reset local rotation after world matrix application
+            c.rotation.set(0, 0, 0);
           });
           sceneRef.current?.remove(group);
+          
+          activeAnimationRef.current = null;
           setIsAnimating(false);
           onAnimationComplete();
         }
       };
-      requestAnimationFrame(step);
+
+      requestAnimationFrame(animateFrame);
     }
-  }, [isAnimating, pendingMove, animationSpeed]);
+  }, [isAnimating, pendingMove, animationSpeed, onAnimationComplete, setIsAnimating]);
 
   return <div ref={mountRef} className="w-full h-full" />;
 };
